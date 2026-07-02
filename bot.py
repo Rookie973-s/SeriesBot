@@ -6,7 +6,7 @@ from telegram.ext import (
     CallbackQueryHandler,
     filters,
 )
-from config import BOT_TOKEN
+from config import BOT_TOKEN, ADMIN_IDS
 from handlers.admin import (
     addseries_handler,
     upload_handler,
@@ -39,7 +39,9 @@ def main():
     # ── Admin file uploads (during session) ───────────────────
     app.add_handler(
         MessageHandler(
-            filters.Document.ALL | filters.VIDEO | filters.PHOTO  | filters.TEXT,
+            filters.User(user_id=ADMIN_IDS) & (
+                filters.Document.ALL | filters.VIDEO | filters.PHOTO | filters.TEXT
+            ),
             upload_handler,
         )
     )
