@@ -171,7 +171,7 @@ async def _send_page(
         )
 
 
-async def _send_file(bot, chat_id: int, file_id: str, file_type: str, caption: str):
+async def _send_file(bot, chat_id: int, file_id: str, file_type: str, caption: str, extra: dict = None):
     kwargs = dict(chat_id=chat_id, caption=caption, parse_mode=ParseMode.MARKDOWN)
     if file_type == "document":
         await bot.send_document(document=file_id, **kwargs)
@@ -179,3 +179,12 @@ async def _send_file(bot, chat_id: int, file_id: str, file_type: str, caption: s
         await bot.send_video(video=file_id, **kwargs)
     elif file_type == "photo":
         await bot.send_photo(photo=file_id, **kwargs)
+    elif file_type == "text":
+        url = (extra or {}).get("text", "")
+        if url.startswith("http://") or url.startswith("https://"):
+            keyboard = InlineKeyboardMarkup(
+                [[InlineKeyboardButton(caption.strip("🎬 *_") or "Open", url=url)]]
+            )
+            await bot.send_message(chat_id=chat_id, text=caption, parse_mode=ParseMode.MARKDOWN, reply_markup=keyboard)
+        else:
+            await bot.send_message(chat_id=chat_id, text=f"{caption}\n\n{url}", parse_mode=ParseMode.MARKDOWN)
