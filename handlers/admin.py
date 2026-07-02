@@ -64,14 +64,15 @@ async def upload_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     session = _sessions.get(user.id)
     if not session:
-        # Admin sent a file outside a session — ignore silently
         return
 
     message = update.message
-    if message.text:
-    file_type = "text"
+
     file_id = None
-    name = message.text
+    file_type = None
+    name = None
+    text_content = None
+
     if message.document:
         file_id   = message.document.file_id
         file_type = "document"
@@ -84,17 +85,32 @@ async def upload_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         file_id   = message.photo[-1].file_id
         file_type = "photo"
         name      = message.caption or "Photo"
+    elif message.text:
+        # Plain link, or "Label | URL" for a labeled button
+        file_type = "text"
+        raw = message.text.strip()
+        if "|" in raw:
+            label, _, url = raw.partition("|")
+            name = label.strip()
+            text_content = url.strip()
+        else:
+            name = f"Link {len(session['files']) + 1}"
+            text_content = raw
     else:
         return
 
     caption = message.caption or f"🎬 *{name}* — *{session['title']}*"
 
-    session["files"].append({
+    entry = {
         "file_id":   file_id,
         "file_type": file_type,
         "caption":   caption,
         "name":      name,
-    })
+    }
+    if text_content is not None:
+        entry["text"] = text_content
+
+    session["files"].append(entry)
 
     count = len(session["files"])
     await message.reply_text(
@@ -102,7 +118,6 @@ async def upload_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Send more or type /done to finish.",
         parse_mode=ParseMode.MARKDOWN,
     )
-
 
 # ─── /done ────────────────────────────────────────────────────────────────────
 
