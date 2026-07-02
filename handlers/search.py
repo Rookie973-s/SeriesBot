@@ -104,7 +104,7 @@ async def pagination_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         files=files,
         page=page,
     )
-
+await _send_file(context.bot, chat_id, file_id, file_type, caption, extra=f)
 
 # ─── Core delivery ────────────────────────────────────────────────────────────
 
