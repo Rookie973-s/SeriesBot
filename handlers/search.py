@@ -104,7 +104,6 @@ async def pagination_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         files=files,
         page=page,
     )
-await _send_file(context.bot, chat_id, file_id, file_type, caption, extra=f)
 
 # ─── Core delivery ────────────────────────────────────────────────────────────
 
@@ -142,7 +141,8 @@ async def _send_page(
         file_type = f.get("file_type", "document")
         caption   = f.get("caption", f"🎬 *{title}*")
 
-        await _send_file(context.bot, chat_id, file_id, file_type, caption)
+        await _send_file(context.bot, chat_id, file_id, file_type, caption, extra=f)
+
 
         if i < len(chunk) - 1:
             await asyncio.sleep(0.4)
