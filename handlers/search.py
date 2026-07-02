@@ -35,8 +35,8 @@ async def text_search_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
         # Only reply if it looks intentional (3+ chars, no spaces before short words)
         if len(query) >= 3:
             await message.reply_text(
-                f"🔍 No series found for *{query}*.\n"
-                f"Check spelling or try a shorter keyword.",
+             f"🔍 *{query}* isn't available for instant response.\n"
+f"Our admins are reviewing your request. Please wait a moment it'll be posted."
                 parse_mode=ParseMode.MARKDOWN,
             )
         return
