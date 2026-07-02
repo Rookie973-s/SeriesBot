@@ -39,7 +39,7 @@ async def text_search_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
                 parse_mode=ParseMode.MARKDOWN,
             )
   
-    return
+       return
 
     files = series.get("files", [])
     title = series["title"]
