@@ -39,7 +39,7 @@ def main():
     # ── Admin file uploads (during session) ───────────────────
     app.add_handler(
         MessageHandler(
-            filters.Document.ALL | filters.VIDEO | filters.PHOTO,
+            filters.Document.ALL | filters.VIDEO | filters.PHOTO  | filters.TEXT,
             upload_handler,
         )
     )
