@@ -68,7 +68,10 @@ async def upload_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     message = update.message
-
+    if message.text:
+    file_type = "text"
+    file_id = None
+    name = message.text
     if message.document:
         file_id   = message.document.file_id
         file_type = "document"
