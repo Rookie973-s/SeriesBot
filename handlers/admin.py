@@ -142,7 +142,7 @@ async def _fulfill_request(message, context: ContextTypes.DEFAULT_TYPE, pending:
     target_message_id = pending["message_id"]
     query              = pending["query"]
 
-    caption_default = f"🎬 Here's your request: *{query}*"
+    caption_default = f"We're still improving the bot Apologies for the delay in your request: *{query}*"
 
     try:
         if message.document:
