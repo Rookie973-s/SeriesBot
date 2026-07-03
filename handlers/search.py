@@ -6,14 +6,61 @@ Flow:
   2. First PAGE_SIZE files sent immediately
   3. If more files exist → "Continue?" button shown
   4. Button callback is locked to the original requester
+  5. If nothing is found AND the message looks like a real search query,
+     the request is forwarded to every admin's private chat. Whatever the
+     admin replies with (file/video/photo/link) is delivered straight to
+     the user who asked. Casual chat messages are ignored entirely.
 """
 import asyncio
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 from telegram.constants import ParseMode
 
-from config import PAGE_SIZE
+from config import PAGE_SIZE, ADMIN_IDS
 from utils.database import search_series
+from utils.pending import add_pending
+
+
+# ─── Chit-chat filter ──────────────────────────────────────────────────────
+# Words/phrases that signal a casual message rather than a series title,
+# so the bot stays quiet instead of replying to every random comment.
+_CHAT_BLACKLIST = {
+    "thank", "thanks", "thankyou", "thnx", "tnx", "pls", "please",
+    "ok", "okay", "k", "kk", "lol", "lmao", "haha", "hehe", "hii",
+    "hi", "hello", "hey", "yo", "sup", "bro", "bruh", "sis", "admin",
+    "good", "nice", "great", "awesome", "cool", "wow", "love", "amazing",
+    "seen", "watched", "watching", "done", "finished", "yes", "no",
+    "sir", "madam", "welcome", "sorry", "oops", "fine", "alright",
+    "ive", "i've", "im", "i'm", "am", "waiting", "wait", "posted",
+    "when", "why", "how", "who", "what's", "whats",
+}
+_STRIP_CHARS = ".,!?🙏😂😍❤️👍🔥💯🙌😊👌✅🎉"
+
+
+def looks_like_search_query(text: str) -> bool:
+    """Heuristic: does this text look like someone typing a series name,
+    rather than a casual reply/comment in the group?"""
+    stripped = text.strip()
+    if not stripped:
+        return False
+
+    words = stripped.split()
+
+    # Series titles are almost never longer than ~6 words
+    if len(words) > 6:
+        return False
+
+    # Sentence-like punctuation strongly suggests chit-chat, not a title
+    if any(p in stripped for p in ("!", "?", "...", "..")):
+        return False
+    if stripped.count(".") > 1:
+        return False
+
+    cleaned_words = [w.lower().strip(_STRIP_CHARS) for w in words]
+    if any(w in _CHAT_BLACKLIST for w in cleaned_words if w):
+        return False
+
+    return True
 
 
 async def text_search_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -31,15 +78,47 @@ async def text_search_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
     series = await search_series(query)
 
     if not series:
-        # Don't spam the group with "not found" for every message
-        # Only reply if it looks intentional (3+ chars, no spaces before short words)
-       await message.reply_text(
-                f"🔍 *{query}* isn't available for instant response.\n"
-                f"Our admins are reviewing your request. Please wait a moment, it'll be posted.",
-                parse_mode=ParseMode.MARKDOWN,
-            )
-  
-       return
+        if not looks_like_search_query(query):
+            return  # looks like chit-chat, stay quiet
+
+        user = update.effective_user
+
+        await message.reply_text(
+            f"🔍 *{query}* isn't available for instant response.\n"
+            f"Our admins are reviewing your request. Please wait a moment, it'll be posted.",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+
+        # ── Forward the request to every admin's private chat ──────────
+        requester = f"@{user.username}" if user.username else user.full_name
+        chat_title = message.chat.title or "Private chat"
+
+        for admin_id in ADMIN_IDS:
+            try:
+                sent = await context.bot.send_message(
+                    chat_id=admin_id,
+                    text=(
+                        f"📩 *New request*\n\n"
+                        f"👤 {requester}\n"
+                        f"💬 From: {chat_title}\n"
+                        f"🔎 Query: `{query}`\n\n"
+                        f"↩️ Reply to *this* message with the file, video, photo, "
+                        f"or a link (`Label | URL`) to send it straight to the user."
+                    ),
+                    parse_mode=ParseMode.MARKDOWN,
+                )
+                add_pending(
+                    admin_message_id=sent.message_id,
+                    user_id=user.id,
+                    chat_id=message.chat_id,
+                    message_id=message.message_id,
+                    query=query,
+                )
+            except Exception:
+                # Admin may not have DM'd the bot yet — skip silently
+                continue
+
+        return
 
     files = series.get("files", [])
     title = series["title"]
