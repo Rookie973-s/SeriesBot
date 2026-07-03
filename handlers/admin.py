@@ -7,8 +7,11 @@ Admin commands for SeriesBot.
 /delseries <Title>          — Delete a series
 /listall                    — List all stored series titles
 /botstats                   — Show stats
+
+Also handles: admin replying (in DM with the bot) to a forwarded user
+request — that reply gets delivered straight to whoever asked.
 """
-from telegram import Update
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 from telegram.constants import ParseMode
 
@@ -19,6 +22,7 @@ from utils.database import (
     get_all_series_titles,
     count_series,
 )
+from utils.pending import get_pending, pop_pending
 
 # In-memory session per admin: { admin_id: { "title": str, "files": [] } }
 _sessions: dict[int, dict] = {}
@@ -54,19 +58,28 @@ async def addseries_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-# ─── File upload handler (during session) ────────────────────────────────────
+# ─── File upload handler (during session, or fulfilling a forwarded request) ──
 
 async def upload_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Receives files from admin during an active session."""
+    """Receives files from admin — either as part of an /addseries session,
+    or as a reply to a request that was forwarded to their DM."""
     user = update.effective_user
     if not is_admin(user.id):
         return
 
+    message = update.message
+
+    # ── Case 1: this is a reply fulfilling a forwarded user request ────────
+    if message.reply_to_message:
+        pending = get_pending(message.reply_to_message.message_id)
+        if pending:
+            await _fulfill_request(message, context, pending)
+            return
+
+    # ── Case 2: this is part of an active /addseries session ───────────────
     session = _sessions.get(user.id)
     if not session:
         return
-
-    message = update.message
 
     file_id = None
     file_type = None
@@ -118,6 +131,84 @@ async def upload_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Send more or type /done to finish.",
         parse_mode=ParseMode.MARKDOWN,
     )
+
+
+# ─── Fulfilling a forwarded user request ───────────────────────────────────────
+
+async def _fulfill_request(message, context: ContextTypes.DEFAULT_TYPE, pending: dict):
+    """Delivers the admin's reply (file/video/photo/link) to the original
+    user who asked, as a reply to their original message."""
+    target_chat_id    = pending["chat_id"]
+    target_message_id = pending["message_id"]
+    query              = pending["query"]
+
+    caption_default = f"🎬 Here's your request: *{query}*"
+
+    try:
+        if message.document:
+            await context.bot.send_document(
+                chat_id=target_chat_id,
+                document=message.document.file_id,
+                caption=message.caption or caption_default,
+                parse_mode=ParseMode.MARKDOWN,
+                reply_to_message_id=target_message_id,
+            )
+        elif message.video:
+            await context.bot.send_video(
+                chat_id=target_chat_id,
+                video=message.video.file_id,
+                caption=message.caption or caption_default,
+                parse_mode=ParseMode.MARKDOWN,
+                reply_to_message_id=target_message_id,
+            )
+        elif message.photo:
+            await context.bot.send_photo(
+                chat_id=target_chat_id,
+                photo=message.photo[-1].file_id,
+                caption=message.caption or caption_default,
+                parse_mode=ParseMode.MARKDOWN,
+                reply_to_message_id=target_message_id,
+            )
+        elif message.text:
+            raw = message.text.strip()
+            if "|" in raw:
+                label, _, url = raw.partition("|")
+                label = label.strip()
+                url   = url.strip()
+            else:
+                label = None
+                url   = raw
+
+            if url.startswith("http://") or url.startswith("https://"):
+                keyboard = InlineKeyboardMarkup(
+                    [[InlineKeyboardButton(label or "Open", url=url)]]
+                )
+                await context.bot.send_message(
+                    chat_id=target_chat_id,
+                    text=caption_default,
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=keyboard,
+                    reply_to_message_id=target_message_id,
+                )
+            else:
+                await context.bot.send_message(
+                    chat_id=target_chat_id,
+                    text=f"{caption_default}\n\n{raw}",
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_to_message_id=target_message_id,
+                )
+        else:
+            await message.reply_text(
+                "⚠️ Unsupported content — send a document, video, photo, or link."
+            )
+            return
+
+        pop_pending(message.reply_to_message.message_id)
+        await message.reply_text("✅ Sent to the user!")
+
+    except Exception as e:
+        await message.reply_text(f"⚠️ Failed to deliver to user: {e}")
+
 
 # ─── /done ────────────────────────────────────────────────────────────────────
 
