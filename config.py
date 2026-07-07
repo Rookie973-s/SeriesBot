@@ -25,3 +25,8 @@ SERIES_COLLECTION = "series"    # new collection
 
 # ── Pagination ─────────────────────────────────────────────────────────────────
 PAGE_SIZE = 10  # files per page
+
+_raw_channel = os.getenv("SOURCE_CHANNEL_ID")
+if not _raw_channel:
+    raise RuntimeError("SOURCE_CHANNEL_ID is not set.")
+CHANNEL_ID = int(_raw_channel)
