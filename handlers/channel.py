@@ -30,8 +30,18 @@ async def auto_index_channel_post(update: Update, context: ContextTypes.DEFAULT_
         return
 
     title = (post.caption or post.text or "").strip()
+
+    if not title and post.document and post.document.file_name:
+        # No caption — fall back to the filename, stripped of its extension
+        import os
+        title = os.path.splitext(post.document.file_name)[0].strip()
+
+    if not title and post.video and post.video.file_name:
+        import os
+        title = os.path.splitext(post.video.file_name)[0].strip()
+
     if not title:
-        return  # nothing to index it by — e.g. a bare video with no caption
+        return  # nothing to index it by — e.g. a bare photo with no caption/filename
 
     if "|" in title:
         title = title.split("|", 1)[0].strip()
