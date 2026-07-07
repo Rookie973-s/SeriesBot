@@ -6,7 +6,7 @@ from telegram.ext import (
     CallbackQueryHandler,
     filters,
 )
-from config import BOT_TOKEN, ADMIN_IDS
+from config import BOT_TOKEN, ADMIN_IDS, CHANNEL_ID
 from handlers.admin import (
     addseries_handler,
     upload_handler,
@@ -17,6 +17,7 @@ from handlers.admin import (
     botstats_handler,
 )
 from handlers.search import text_search_handler, pagination_callback
+from handlers.channel import auto_index_channel_post, indexchannel_handler
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -35,8 +36,12 @@ def main():
     app.add_handler(CommandHandler("delseries",  delseries_handler))
     app.add_handler(CommandHandler("listall",    listall_handler))
     app.add_handler(CommandHandler("botstats",   botstats_handler))
+    app.add_handler(CommandHandler("indexchannel", indexchannel_handler))
 
-    # ── Admin file uploads (during session) ───────────────────
+    # ── Auto-index new posts from the source channel ───────────
+    app.add_handler(MessageHandler(filters.Chat(chat_id=CHANNEL_ID), auto_index_channel_post))
+
+    # ── Admin file uploads (during session, or fulfilling a request) ──
     app.add_handler(
         MessageHandler(
             filters.User(user_id=ADMIN_IDS) & (
