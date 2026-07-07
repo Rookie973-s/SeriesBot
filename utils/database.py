@@ -76,3 +76,34 @@ async def delete_series(title: str) -> bool:
 async def count_series() -> int:
     db = get_db()
     return await db[SERIES_COLLECTION].count_documents({})
+
+CHANNEL_COLLECTION = "channel_index"
+
+
+async def save_channel_entry(title: str, message_id: int) -> str:
+    """Index a channel post so it can be found/forwarded by title later."""
+    db = get_db()
+    await db[CHANNEL_COLLECTION].update_one(
+        {"title_lower": title.lower()},
+        {"$set": {"title": title, "title_lower": title.lower(), "message_id": message_id}},
+        upsert=True,
+    )
+    return title
+
+
+async def search_channel_entry(query: str) -> dict | None:
+    db = get_db()
+    q = query.strip().lower()
+
+    record = await db[CHANNEL_COLLECTION].find_one({"title_lower": q})
+    if record:
+        return record
+
+    import re
+    pattern = re.compile(re.escape(q), re.IGNORECASE)
+    return await db[CHANNEL_COLLECTION].find_one({"title_lower": pattern})
+
+
+async def count_channel_entries() -> int:
+    db = get_db()
+    return await db[CHANNEL_COLLECTION].count_documents({})
