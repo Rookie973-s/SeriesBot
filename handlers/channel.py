@@ -1,21 +1,27 @@
 """
 Indexing for the source channel where files already live.
 
-Two ways an entry gets indexed:
+Two ways an entry gets indexed — both now save the ACTUAL FILE into the
+main series collection (same one /addseries uses), not just a pointer to
+the channel post. This means delivery never depends on the channel again.
+
   1. Automatically — every new post in the channel is indexed using its
-     caption/text as the title.
-  2. Manually — admin forwards an existing OLD channel post into their
-     private chat with the bot, then replies to it with
-     /indexchannel <Title>
-     This is how you back-index everything already posted before the bot
-     existed.
+     caption or filename as the title.
+  2. Manually, one at a time — admin forwards an old channel post into
+     their private chat with the bot, then replies to it with:
+       /indexchannel <Title>
+
+For bulk back-indexing many old files at once, see /startindex and
+/stopindex in handlers/admin.py — that lets you just forward a whole
+batch of files and each gets saved under its own title automatically.
 """
 from telegram import Update
 from telegram.ext import ContextTypes
 from telegram.constants import ParseMode
 
 from config import ADMIN_IDS, CHANNEL_ID
-from utils.database import save_channel_entry
+from utils.database import add_series_file
+from utils.indexing import derive_title_and_entry
 
 
 def is_admin(user_id: int) -> bool:
@@ -29,27 +35,14 @@ async def auto_index_channel_post(update: Update, context: ContextTypes.DEFAULT_
     if not post or post.chat_id != CHANNEL_ID:
         return
 
-    title = (post.caption or post.text or "").strip()
-
-    if not title and post.document and post.document.file_name:
-        # No caption — fall back to the filename, stripped of its extension
-        import os
-        title = os.path.splitext(post.document.file_name)[0].strip()
-
-    if not title and post.video and post.video.file_name:
-        import os
-        title = os.path.splitext(post.video.file_name)[0].strip()
-
+    title, entry = derive_title_and_entry(post)
     if not title:
-        return  # nothing to index it by — e.g. a bare photo with no caption/filename
+        return  # nothing usable to index it by
 
-    if "|" in title:
-        title = title.split("|", 1)[0].strip()
-
-    await save_channel_entry(title, post.message_id)
+    await add_series_file(title, entry)
 
 
-# ─── Manual /indexchannel command (for back-indexing old posts) ───────────
+# ─── Manual /indexchannel command (index one specific old post) ───────────
 
 async def indexchannel_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -61,7 +54,8 @@ async def indexchannel_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     if not context.args:
         await message.reply_text(
             "⚠️ Usage: forward a post from the channel here, then *reply* to it with:\n"
-            "`/indexchannel <Title>`",
+            "`/indexchannel <Title>`\n\n"
+            "Tip: for indexing many old files at once, use /startindex instead.",
             parse_mode=ParseMode.MARKDOWN,
         )
         return
@@ -76,28 +70,16 @@ async def indexchannel_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         return
 
     fwd = message.reply_to_message
-    origin_chat_id = None
-    origin_message_id = None
 
-    # PTB v20+ / Bot API 7+
-    if getattr(fwd, "forward_origin", None) and hasattr(fwd.forward_origin, "chat"):
-        origin_chat_id = fwd.forward_origin.chat.id
-        origin_message_id = fwd.forward_origin.message_id
-    # Older Bot API fallback
-    elif getattr(fwd, "forward_from_chat", None):
-        origin_chat_id = fwd.forward_from_chat.id
-        origin_message_id = fwd.forward_from_message_id
-
-    if origin_chat_id != CHANNEL_ID or not origin_message_id:
-        await message.reply_text(
-            "⚠️ That message doesn't look like it was forwarded from your source channel."
-        )
+    _, entry = derive_title_and_entry(fwd)
+    if not entry:
+        await message.reply_text("⚠️ That message doesn't contain a supported file, video, photo, or link.")
         return
 
     title = " ".join(context.args)
-    await save_channel_entry(title, origin_message_id)
+    await add_series_file(title, entry)
 
     await message.reply_text(
-        f"✅ Indexed *{title}* → channel message `{origin_message_id}`.",
+        f"✅ Indexed *{title}* — file saved and searchable now.",
         parse_mode=ParseMode.MARKDOWN,
     )
