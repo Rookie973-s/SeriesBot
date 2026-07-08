@@ -7,6 +7,10 @@ Admin commands for SeriesBot.
 /delseries <Title>          — Delete a series
 /listall                    — List all stored series titles
 /botstats                   — Show stats
+/startindex                 — Start bulk-indexing mode (forward old channel
+                               files here, one after another — each gets
+                               saved under its own title automatically)
+/stopindex                  — Stop bulk-indexing mode
 
 Also handles: admin replying (in DM with the bot) to a forwarded user
 request — that reply gets delivered straight to whoever asked.
@@ -18,14 +22,19 @@ from telegram.constants import ParseMode
 from config import ADMIN_IDS, PAGE_SIZE
 from utils.database import (
     save_series,
+    add_series_file,
     delete_series,
     get_all_series_titles,
     count_series,
 )
 from utils.pending import get_pending, pop_pending
+from utils.indexing import derive_title_and_entry
 
 # In-memory session per admin: { admin_id: { "title": str, "files": [] } }
 _sessions: dict[int, dict] = {}
+
+# Admins currently in bulk-indexing mode (forwarding old channel files)
+_index_sessions: set[int] = set()
 
 
 def is_admin(user_id: int) -> bool:
@@ -58,11 +67,40 @@ async def addseries_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-# ─── File upload handler (during session, or fulfilling a forwarded request) ──
+# ─── /startindex, /stopindex — bulk indexing mode ──────────────────────────
+
+async def startindex_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if not is_admin(user.id):
+        return
+
+    _index_sessions.add(user.id)
+    await update.message.reply_text(
+        "📥 *Bulk indexing mode ON.*\n\n"
+        "Forward old files from the channel here now, one after another.\n"
+        "Each file will be saved under its own title, taken from its "
+        "caption (or filename if there's no caption).\n\n"
+        "Type /stopindex when you're done.",
+        parse_mode=ParseMode.MARKDOWN,
+    )
+
+
+async def stopindex_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if not is_admin(user.id):
+        return
+
+    _index_sessions.discard(user.id)
+    await update.message.reply_text("✅ Bulk indexing mode OFF.")
+
+
+# ─── File upload handler ───────────────────────────────────────────────────
+# Handles three distinct situations, in this order:
+#   1. Admin is replying to a forwarded user request → deliver to that user
+#   2. Admin is in bulk-indexing mode → auto-save this file under its own title
+#   3. Admin is inside an /addseries session → add file to that session
 
 async def upload_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Receives files from admin — either as part of an /addseries session,
-    or as a reply to a request that was forwarded to their DM."""
     user = update.effective_user
     if not is_admin(user.id):
         return
@@ -76,7 +114,20 @@ async def upload_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await _fulfill_request(message, context, pending)
             return
 
-    # ── Case 2: this is part of an active /addseries session ───────────────
+    # ── Case 2: bulk indexing mode — save this file under its own title ────
+    if user.id in _index_sessions:
+        title, entry = derive_title_and_entry(message)
+        if not title:
+            await message.reply_text(
+                "⚠️ Couldn't find a title for that (no caption or filename) — skipped."
+            )
+            return
+
+        await add_series_file(title, entry)
+        await message.reply_text(f"✅ Indexed *{title}*", parse_mode=ParseMode.MARKDOWN)
+        return
+
+    # ── Case 3: part of an active /addseries session ────────────────────────
     session = _sessions.get(user.id)
     if not session:
         return
@@ -142,7 +193,7 @@ async def _fulfill_request(message, context: ContextTypes.DEFAULT_TYPE, pending:
     target_message_id = pending["message_id"]
     query              = pending["query"]
 
-    caption_default = f"We're still improving the bot Apologies for the delay in your request: *{query}*"
+    caption_default = f"🎬 Here's your request: *{query}*"
 
     try:
         if message.document:
@@ -315,17 +366,21 @@ async def botstats_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🔄 Active session: *{active['title']}* ({len(active['files'])} files staged)\n"
         if active else ""
     )
+    indexing_line = "📥 Bulk indexing mode: *ON*\n" if user.id in _index_sessions else ""
 
     await update.message.reply_text(
         f"📊 *SeriesBot Stats*\n\n"
         f"📺 Total series: `{total}`\n\n"
         f"{session_line}"
+        f"{indexing_line}"
         f"*Admin Commands:*\n"
         f"`/addseries <Title>` — Start upload session\n"
         f"`/done` — Save & finish\n"
         f"`/cancel` — Abort session\n"
         f"`/delseries <Title>` — Delete a series\n"
         f"`/listall` — List all series\n"
+        f"`/startindex` — Bulk-index forwarded channel files\n"
+        f"`/stopindex` — Stop bulk indexing\n"
         f"`/botstats` — This panel",
         parse_mode=ParseMode.MARKDOWN,
     )
