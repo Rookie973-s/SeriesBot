@@ -15,6 +15,8 @@ from handlers.admin import (
     delseries_handler,
     listall_handler,
     botstats_handler,
+    startindex_handler,
+    stopindex_handler,
 )
 from handlers.search import text_search_handler, pagination_callback
 from handlers.channel import auto_index_channel_post, indexchannel_handler
@@ -37,11 +39,13 @@ def main():
     app.add_handler(CommandHandler("listall",    listall_handler))
     app.add_handler(CommandHandler("botstats",   botstats_handler))
     app.add_handler(CommandHandler("indexchannel", indexchannel_handler))
+    app.add_handler(CommandHandler("startindex", startindex_handler))
+    app.add_handler(CommandHandler("stopindex",  stopindex_handler))
 
     # ── Auto-index new posts from the source channel ───────────
     app.add_handler(MessageHandler(filters.Chat(chat_id=CHANNEL_ID), auto_index_channel_post))
 
-    # ── Admin file uploads (during session, or fulfilling a request) ──
+    # ── Admin file uploads (session, bulk-index, or fulfilling a request) ──
     app.add_handler(
         MessageHandler(
             filters.User(user_id=ADMIN_IDS) & (
