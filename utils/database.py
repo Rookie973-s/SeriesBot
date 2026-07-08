@@ -17,7 +17,7 @@ def get_db():
 
 async def save_series(title: str, files: list[dict]) -> str:
     """
-    Insert or update a series entry.
+    Insert or update a series entry, REPLACING its file list.
     files = [ { file_id, file_type, caption } ... ]
     Returns the canonical title stored.
     """
@@ -30,6 +30,24 @@ async def save_series(title: str, files: list[dict]) -> str:
                 "title_lower": title.lower(),
                 "files": files,
             }
+        },
+        upsert=True,
+    )
+    return title
+
+
+async def add_series_file(title: str, file_entry: dict) -> str:
+    """
+    Add a single file to a series, APPENDING to its existing file list
+    (creating the series if it doesn't exist yet). Used when indexing
+    files one at a time — e.g. from the channel, forwarded in bulk.
+    """
+    db = get_db()
+    await db[SERIES_COLLECTION].update_one(
+        {"title_lower": title.lower()},
+        {
+            "$set": {"title": title, "title_lower": title.lower()},
+            "$push": {"files": file_entry},
         },
         upsert=True,
     )
@@ -76,34 +94,3 @@ async def delete_series(title: str) -> bool:
 async def count_series() -> int:
     db = get_db()
     return await db[SERIES_COLLECTION].count_documents({})
-
-CHANNEL_COLLECTION = "channel_index"
-
-
-async def save_channel_entry(title: str, message_id: int) -> str:
-    """Index a channel post so it can be found/forwarded by title later."""
-    db = get_db()
-    await db[CHANNEL_COLLECTION].update_one(
-        {"title_lower": title.lower()},
-        {"$set": {"title": title, "title_lower": title.lower(), "message_id": message_id}},
-        upsert=True,
-    )
-    return title
-
-
-async def search_channel_entry(query: str) -> dict | None:
-    db = get_db()
-    q = query.strip().lower()
-
-    record = await db[CHANNEL_COLLECTION].find_one({"title_lower": q})
-    if record:
-        return record
-
-    import re
-    pattern = re.compile(re.escape(q), re.IGNORECASE)
-    return await db[CHANNEL_COLLECTION].find_one({"title_lower": pattern})
-
-
-async def count_channel_entries() -> int:
-    db = get_db()
-    return await db[CHANNEL_COLLECTION].count_documents({})
