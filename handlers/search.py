@@ -2,24 +2,24 @@
 User-facing search and paginated delivery.
 
 Flow:
-  1. User types any text in group → bot searches the series DB
-  2. If not found → bot checks the indexed source channel; if a match
-     exists, the post is forwarded (or linked) straight to the user
-  3. If still not found AND the message looks like a real search query,
+  1. User types any text in group → bot searches series DB
+     (this now includes anything indexed from the channel too, since
+     indexing saves the actual file straight into this same collection)
+  2. First PAGE_SIZE files sent immediately
+  3. If more files exist → "Continue?" button shown
+  4. Button callback is locked to the original requester
+  5. If nothing is found AND the message looks like a real search query,
      the request is forwarded to every admin's private chat. Whatever the
      admin replies with (file/video/photo/link) is delivered straight to
      the user who asked. Casual chat messages are ignored entirely.
-  4. First PAGE_SIZE files of a found series are sent immediately
-  5. If more files exist → "Continue?" button shown
-  6. Button callback is locked to the original requester
 """
 import asyncio
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 from telegram.constants import ParseMode
 
-from config import PAGE_SIZE, ADMIN_IDS, CHANNEL_ID
-from utils.database import search_series, search_channel_entry
+from config import PAGE_SIZE, ADMIN_IDS
+from utils.database import search_series
 from utils.pending import add_pending
 
 
@@ -80,12 +80,6 @@ async def text_search_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
     series = await search_series(query)
 
     if not series:
-        # ── Try the source channel before giving up ─────────────────
-        channel_match = await search_channel_entry(query)
-        if channel_match:
-            await _deliver_from_channel(context, message, channel_match)
-            return
-
         if not looks_like_search_query(query):
             return  # looks like chit-chat, stay quiet
 
@@ -191,46 +185,6 @@ async def pagination_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         files=files,
         page=page,
     )
-
-# ─── Channel delivery ───────────────────────────────────────────────────────
-
-async def _deliver_from_channel(context: ContextTypes.DEFAULT_TYPE, message, channel_match: dict):
-    """
-    Attempts to forward the matched post straight from the source channel
-    to the requester. Falls back to a t.me link (public channel) or a
-    plain notice (private/protected channel) if forwarding is blocked.
-    """
-    title = channel_match["title"]
-
-    try:
-        await context.bot.forward_message(
-            chat_id=message.chat_id,
-            from_chat_id=CHANNEL_ID,
-            message_id=channel_match["message_id"],
-            reply_to_message_id=message.message_id,
-        )
-        return
-    except Exception:
-        pass  # forwarding blocked (e.g. "protect content" is on) — try a link instead
-
-    try:
-        chat = await context.bot.get_chat(CHANNEL_ID)
-        if chat.username:
-            link = f"https://t.me/{chat.username}/{channel_match['message_id']}"
-            await message.reply_text(
-                f"🔗 Found *{title}* in our archive:\n{link}",
-                parse_mode=ParseMode.MARKDOWN,
-            )
-        else:
-            await message.reply_text(
-                f"📦 Found *{title}* in our archive, but it's protected content. "
-                f"An admin will send it to you shortly.",
-                parse_mode=ParseMode.MARKDOWN,
-            )
-    except Exception:
-        await message.reply_text(
-            "⚠️ Found a match but couldn't deliver it automatically. An admin will help shortly."
-        )
 
 # ─── Core delivery ────────────────────────────────────────────────────────────
 
