@@ -30,3 +30,7 @@ _raw_channel = os.getenv("SOURCE_CHANNEL_ID")
 if not _raw_channel:
     raise RuntimeError("SOURCE_CHANNEL_ID is not set.")
 CHANNEL_ID = int(_raw_channel)
+
+TMDB_API_KEY = os.getenv("TMDB_API_KEY")
+if not TMDB_API_KEY:
+    raise RuntimeError("TMDB_API_KEY is not set.")
