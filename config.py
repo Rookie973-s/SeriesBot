@@ -35,8 +35,8 @@ if not TMDB_API_KEY:
 # The bot must be an ADMIN in every channel listed here.
 REQUIRED_CHANNELS = [
     {"name": "Main Channel", "username": "@wavemovies_chn", "url": "https://t.me/wavemovies_chn"},
-    {"name": "Movie Channel", "username": -1002247736269, "url": "https://t.me/+dK1IC0727Z43ZWI8"},
-    {"name": "Backup Channel", "username": -1003879166875, "url": "https://t.me/+FTIhdtx-3nFIMzc0"},
+    {"name": "Movie Channel", "username": -1002247736269, "url": "https://t.me/+dK1lC0727Z43ZWI8"},
+    {"name": "Backup Channel", "username": -1003879166875, "url": "https://t.me/+FTlhdtx-3nFlMzc0"},
 ]
 
 BOT_NAME = os.getenv("BOT_NAME", "SeriesBot")
