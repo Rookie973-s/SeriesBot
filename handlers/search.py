@@ -32,6 +32,12 @@ from utils.pending import add_pending
 from utils.membership import check_membership
 from utils.tmdb import tmdb_lookup
 
+# Telegram's system account used when a group admin/owner sends "anonymously"
+# (posting as the group itself). In that mode, update.effective_user is this
+# bot account, NOT the admin's real user ID - so an ADMIN_IDS check alone
+# will never catch it.
+GROUP_ANONYMOUS_BOT_ID = 1087968824
+
 
 # ─── Cheap pre-filter (kept only to avoid pointless TMDB calls) ────────────
 # This is NOT the gate that decides "reply or not" anymore - TMDB is.
@@ -76,7 +82,7 @@ async def _gate_on_membership(update: Update, context: ContextTypes.DEFAULT_TYPE
         for ch in not_joined
     ]
     await update.message.reply_text(
-        "🔒 Please join our channel(s) first to search for series:",
+        "🔒 Please join our channel(s) first to search for series/movies:",
         parse_mode=ParseMode.MARKDOWN,
         reply_markup=InlineKeyboardMarkup(buttons),
     )
@@ -92,7 +98,12 @@ async def text_search_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
     user = update.effective_user
 
     # ── Never treat admin chatter as a search request ──────────────────
-    if user.id in ADMIN_IDS:
+    # Covers both a normal admin account AND an admin posting anonymously
+    # "as the group" (message.sender_chat is set, and/or the sender shows
+    # up as Telegram's GroupAnonymousBot).
+    if message.sender_chat is not None:
+        return
+    if user.id in ADMIN_IDS or user.id == GROUP_ANONYMOUS_BOT_ID:
         return
 
     query = message.text.strip()
