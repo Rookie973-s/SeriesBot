@@ -2,16 +2,24 @@
 User-facing search and paginated delivery.
 
 Flow:
-  1. User types any text in group → bot searches series DB
-     (this now includes anything indexed from the channel too, since
-     indexing saves the actual file straight into this same collection)
-  2. First PAGE_SIZE files sent immediately
-  3. If more files exist → "Continue?" button shown
-  4. Button callback is locked to the original requester
-  5. If nothing is found AND the message looks like a real search query,
-     the request is forwarded to every admin's private chat. Whatever the
-     admin replies with (file/video/photo/link) is delivered straight to
-     the user who asked. Casual chat messages are ignored entirely.
+  1. Admins are skipped entirely - their plain text is never treated as a
+     search query (avoids the bot replying to the admin's own comments).
+  2. Non-admin user must have joined the required channel(s), same gate
+     as /start. If not joined, they're prompted to join instead of being
+     searched.
+  3. User types any text in group -> bot searches series DB (this
+     includes anything indexed from the channel too, since indexing
+     saves the actual file straight into this same collection).
+  4. First PAGE_SIZE files sent immediately.
+  5. If more files exist -> "Continue?" button shown, locked to the
+     original requester.
+  6. If nothing is found in our DB, we no longer rely on a word
+     blacklist to guess whether it's a real request. Instead we ask
+     TMDB whether the text matches a real movie/show title:
+       - No TMDB match  -> it's chit-chat, bot stays silent.
+       - TMDB match     -> forwarded to every admin's private chat.
+     Whatever the admin replies with (file/video/photo/link) is
+     delivered straight to the user who asked.
 """
 import asyncio
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -21,34 +29,25 @@ from telegram.constants import ParseMode
 from config import PAGE_SIZE, ADMIN_IDS
 from utils.database import search_series
 from utils.pending import add_pending
+from utils.membership import check_membership
+from utils.tmdb import tmdb_lookup
 
 
-# ─── Chit-chat filter ──────────────────────────────────────────────────────
-# Words/phrases that signal a casual message rather than a series title,
-# so the bot stays quiet instead of replying to every random comment.
-_CHAT_BLACKLIST = {
-    "thank", "thanks", "thankyou", "thnx", "tnx", "pls", "please",
-    "ok", "okay", "k", "kk", "lol", "lmao", "haha", "hehe", "hii",
-    "hi", "hello", "hey", "yo", "sup", "bro", "bruh", "sis", "admin",
-    "good", "nice", "great", "awesome", "cool", "wow", "love", "amazing",
-    "seen", "watched", "watching", "done", "finished", "yes", "no",
-    "sir", "madam", "welcome", "sorry", "oops", "fine", "alright",
-    "ive", "i've", "im", "i'm", "am", "waiting", "wait", "posted",
-    "when", "why", "how", "who", "what's", "whats",
-}
+# ─── Cheap pre-filter (kept only to avoid pointless TMDB calls) ────────────
+# This is NOT the gate that decides "reply or not" anymore - TMDB is.
+# It just skips obviously-not-a-title text (long sentences, punctuation-
+# heavy chatter) before bothering to hit the API at all.
 _STRIP_CHARS = ".,!?🙏😂😍❤️👍🔥💯🙌😊👌✅🎉"
 
 
-def looks_like_search_query(text: str) -> bool:
-    """Heuristic: does this text look like someone typing a series name,
-    rather than a casual reply/comment in the group?"""
+def _worth_checking_tmdb(text: str) -> bool:
     stripped = text.strip()
     if not stripped:
         return False
 
     words = stripped.split()
 
-    # Series titles are almost never longer than ~6 words
+    # Titles are almost never longer than ~6 words
     if len(words) > 6:
         return False
 
@@ -58,17 +57,42 @@ def looks_like_search_query(text: str) -> bool:
     if stripped.count(".") > 1:
         return False
 
-    cleaned_words = [w.lower().strip(_STRIP_CHARS) for w in words]
-    if any(w in _CHAT_BLACKLIST for w in cleaned_words if w):
-        return False
-
     return True
 
 
+async def _gate_on_membership(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """
+    Returns True if the user is allowed to proceed (has joined required
+    channels). If not, sends a join-prompt (same style as /start) and
+    returns False so the caller can stop processing.
+    """
+    user = update.effective_user
+    not_joined = await check_membership(context.bot, user.id)
+    if not not_joined:
+        return True
+
+    buttons = [
+        [InlineKeyboardButton(f"📢 Join {ch['name']}", url=ch["url"])]
+        for ch in not_joined
+    ]
+    await update.message.reply_text(
+        "🔒 Please join our channel(s) first to search for series:",
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=InlineKeyboardMarkup(buttons),
+    )
+    return False
+
+
 async def text_search_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Triggered on any plain text message — searches for a matching series."""
+    """Triggered on any plain text message - searches for a matching series."""
     message = update.message
     if not message or not message.text:
+        return
+
+    user = update.effective_user
+
+    # ── Never treat admin chatter as a search request ──────────────────
+    if user.id in ADMIN_IDS:
         return
 
     query = message.text.strip()
@@ -77,13 +101,21 @@ async def text_search_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
     if query.startswith("/"):
         return
 
+    # ── Must have joined required channel(s) before we respond at all ──
+    if not await _gate_on_membership(update, context):
+        return
+
     series = await search_series(query)
 
     if not series:
-        if not looks_like_search_query(query):
-            return  # looks like chit-chat, stay quiet
+        # Cheap pre-filter first (saves an API call on obvious chit-chat)
+        if not _worth_checking_tmdb(query):
+            return
 
-        user = update.effective_user
+        # Real gate: does TMDB recognize this as an actual title?
+        match = await tmdb_lookup(query)
+        if not match:
+            return  # not a recognizable title -> stay quiet
 
         await message.reply_text(
             f"🔍 *{query}* isn't available for instant response.\n"
@@ -103,7 +135,8 @@ async def text_search_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
                         f"📩 *New request*\n\n"
                         f"👤 {requester}\n"
                         f"💬 From: {chat_title}\n"
-                        f"🔎 Query: `{query}`\n\n"
+                        f"🔎 Query: `{query}`\n"
+                        f"🎬 TMDB match: *{match['title']}* ({match['media_type']})\n\n"
                         f"↩️ Reply to *this* message with the file, video, photo, "
                         f"or a link (`Label | URL`) to send it straight to the user."
                     ),
@@ -117,14 +150,13 @@ async def text_search_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
                     query=query,
                 )
             except Exception:
-                # Admin may not have DM'd the bot yet — skip silently
+                # Admin may not have DM'd the bot yet - skip silently
                 continue
 
         return
 
     files = series.get("files", [])
     title = series["title"]
-    user  = update.effective_user
 
     await _send_page(
         context=context,
