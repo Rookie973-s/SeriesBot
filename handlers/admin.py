@@ -29,6 +29,7 @@ from utils.database import (
 )
 from utils.pending import get_pending, pop_pending
 from utils.indexing import derive_title_and_entry
+from utils.autodelete import autodelete_notice, schedule_autodelete
 
 # In-memory session per admin: { admin_id: { "title": str, "files": [] } }
 _sessions: dict[int, dict] = {}
@@ -197,29 +198,35 @@ async def _fulfill_request(message, context: ContextTypes.DEFAULT_TYPE, pending:
 
     try:
         if message.document:
-            await context.bot.send_document(
+            caption = (message.caption or caption_default) + autodelete_notice()
+            sent = await context.bot.send_document(
                 chat_id=target_chat_id,
                 document=message.document.file_id,
-                caption=message.caption or caption_default,
+                caption=caption,
                 parse_mode=ParseMode.MARKDOWN,
                 reply_to_message_id=target_message_id,
             )
+            schedule_autodelete(context, target_chat_id, sent.message_id)
         elif message.video:
-            await context.bot.send_video(
+            caption = (message.caption or caption_default) + autodelete_notice()
+            sent = await context.bot.send_video(
                 chat_id=target_chat_id,
                 video=message.video.file_id,
-                caption=message.caption or caption_default,
+                caption=caption,
                 parse_mode=ParseMode.MARKDOWN,
                 reply_to_message_id=target_message_id,
             )
+            schedule_autodelete(context, target_chat_id, sent.message_id)
         elif message.photo:
-            await context.bot.send_photo(
+            caption = (message.caption or caption_default) + autodelete_notice()
+            sent = await context.bot.send_photo(
                 chat_id=target_chat_id,
                 photo=message.photo[-1].file_id,
-                caption=message.caption or caption_default,
+                caption=caption,
                 parse_mode=ParseMode.MARKDOWN,
                 reply_to_message_id=target_message_id,
             )
+            schedule_autodelete(context, target_chat_id, sent.message_id)
         elif message.text:
             raw = message.text.strip()
             if "|" in raw:
@@ -241,6 +248,7 @@ async def _fulfill_request(message, context: ContextTypes.DEFAULT_TYPE, pending:
                     reply_markup=keyboard,
                     reply_to_message_id=target_message_id,
                 )
+                # Just a link/button, nothing to "save to device" - not auto-deleted.
             else:
                 await context.bot.send_message(
                     chat_id=target_chat_id,
