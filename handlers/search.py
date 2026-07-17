@@ -26,6 +26,7 @@ import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 from telegram.constants import ParseMode
+from telegram.error import RetryAfter, TimedOut, NetworkError
 
 from config import PAGE_SIZE, ADMIN_IDS, AUTO_DELETE_SECONDS
 from utils.database import search_series
@@ -35,6 +36,40 @@ from utils.tmdb import tmdb_lookup
 from utils.autodelete import autodelete_notice, schedule_autodelete
 
 logger = logging.getLogger(__name__)
+
+# Minimum gap between consecutive sends to the same chat. Telegram enforces
+# roughly 20 messages/minute to a single group - 1.5s keeps us comfortably
+# under that even with the header + files + continue button all counted.
+_SEND_DELAY_SECONDS = 1.5
+
+
+async def _call_with_retry(coro_func, *args, max_retries: int = 3, **kwargs):
+    """
+    Calls a telegram bot method, automatically waiting out flood control
+    (RetryAfter) or brief network hiccups (TimedOut/NetworkError) instead
+    of letting them abort the whole batch. Re-raises after max_retries so
+    a genuinely broken file still gets caught by the caller's try/except.
+    """
+    last_exc = None
+    for attempt in range(max_retries):
+        try:
+            return await coro_func(*args, **kwargs)
+        except RetryAfter as e:
+            wait = e.retry_after + 1
+            logger.warning(
+                "Flood control hit - waiting %.1fs before retry (attempt %d/%d)",
+                wait, attempt + 1, max_retries,
+            )
+            await asyncio.sleep(wait)
+            last_exc = e
+        except (TimedOut, NetworkError) as e:
+            logger.warning(
+                "Transient network error - retrying in 2s (attempt %d/%d): %s",
+                attempt + 1, max_retries, e,
+            )
+            await asyncio.sleep(2)
+            last_exc = e
+    raise last_exc
 
 
 # Telegram's system account used when a group admin/owner sends "anonymously"
@@ -266,7 +301,7 @@ async def _send_page(
     if reply_to:
         kwargs["reply_to_message_id"] = reply_to
 
-    await context.bot.send_message(**kwargs)
+    await _call_with_retry(context.bot.send_message, **kwargs)
 
     # ── Send files ────────────────────────────────────────────
     failed = []
@@ -289,10 +324,11 @@ async def _send_page(
             )
 
         if i < len(chunk) - 1:
-            await asyncio.sleep(0.4)
+            await asyncio.sleep(_SEND_DELAY_SECONDS)
 
     if failed:
-        await context.bot.send_message(
+        await _call_with_retry(
+            context.bot.send_message,
             chat_id=chat_id,
             text=(
                 "⚠️ Couldn't send " + str(len(failed)) + " file(s) in this batch "
@@ -313,7 +349,8 @@ async def _send_page(
             )]
         ])
         try:
-            await context.bot.send_message(
+            await _call_with_retry(
+                context.bot.send_message,
                 chat_id=chat_id,
                 text=f"✅ Part {page + 1} sent! Tap to get the next batch.",
                 reply_markup=keyboard,
@@ -324,7 +361,8 @@ async def _send_page(
                 "Failed to send Continue button for '%s' page %d (callback_data=%r)",
                 title, page + 1, callback_data,
             )
-            await context.bot.send_message(
+            await _call_with_retry(
+                context.bot.send_message,
                 chat_id=chat_id,
                 text=(
                     f"✅ Part {page + 1} sent, but I couldn't build the Continue "
@@ -333,7 +371,8 @@ async def _send_page(
                 ),
             )
     else:
-        await context.bot.send_message(
+        await _call_with_retry(
+            context.bot.send_message,
             chat_id=chat_id,
             text=f"✅ All {total} file{'s' if total != 1 else ''} for *{title}* sent!",
             parse_mode=ParseMode.MARKDOWN,
@@ -345,18 +384,24 @@ async def _send_file(context, chat_id: int, file_id: str, file_type: str, captio
     bot = context.bot
     kwargs = dict(chat_id=chat_id, caption=caption, parse_mode=ParseMode.MARKDOWN)
     if file_type == "document":
-        return await bot.send_document(document=file_id, **kwargs)
+        return await _call_with_retry(bot.send_document, document=file_id, **kwargs)
     elif file_type == "video":
-        return await bot.send_video(video=file_id, **kwargs)
+        return await _call_with_retry(bot.send_video, video=file_id, **kwargs)
     elif file_type == "photo":
-        return await bot.send_photo(photo=file_id, **kwargs)
+        return await _call_with_retry(bot.send_photo, photo=file_id, **kwargs)
     elif file_type == "text":
         url = (extra or {}).get("text", "")
         if url.startswith("http://") or url.startswith("https://"):
             keyboard = InlineKeyboardMarkup(
                 [[InlineKeyboardButton(caption.strip("🎬 *_") or "Open", url=url)]]
             )
-            return await bot.send_message(chat_id=chat_id, text=caption, parse_mode=ParseMode.MARKDOWN, reply_markup=keyboard)
+            return await _call_with_retry(
+                bot.send_message, chat_id=chat_id, text=caption,
+                parse_mode=ParseMode.MARKDOWN, reply_markup=keyboard,
+            )
         else:
-            return await bot.send_message(chat_id=chat_id, text=f"{caption}\n\n{url}", parse_mode=ParseMode.MARKDOWN)
+            return await _call_with_retry(
+                bot.send_message, chat_id=chat_id, text=f"{caption}\n\n{url}",
+                parse_mode=ParseMode.MARKDOWN,
+            )
     return None
