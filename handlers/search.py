@@ -22,15 +22,20 @@ Flow:
      delivered straight to the user who asked.
 """
 import asyncio
+import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 from telegram.constants import ParseMode
 
-from config import PAGE_SIZE, ADMIN_IDS
+from config import PAGE_SIZE, ADMIN_IDS, AUTO_DELETE_SECONDS
 from utils.database import search_series
 from utils.pending import add_pending
 from utils.membership import check_membership
 from utils.tmdb import tmdb_lookup
+from utils.autodelete import autodelete_notice, schedule_autodelete
+
+logger = logging.getLogger(__name__)
+
 
 # Telegram's system account used when a group admin/owner sends "anonymously"
 # (posting as the group itself). In that mode, update.effective_user is this
@@ -82,7 +87,7 @@ async def _gate_on_membership(update: Update, context: ContextTypes.DEFAULT_TYPE
         for ch in not_joined
     ]
     await update.message.reply_text(
-        "🔒 Please join our channel(s) first to search for series/movies:",
+        "🔒 Please join our channel(s) first to search for series:",
         parse_mode=ParseMode.MARKDOWN,
         reply_markup=InlineKeyboardMarkup(buttons),
     )
@@ -247,11 +252,15 @@ async def _send_page(
     total = len(files)
     pages = -(-total // PAGE_SIZE)  # ceiling division
 
+    hours = AUTO_DELETE_SECONDS / 3600
+    hours_str = f"{hours:.0f}" if hours == int(hours) else f"{hours:.1f}"
+
     # ── Header message ────────────────────────────────────────
     header = (
         f"📺 *{title}*\n"
         f"Sending {len(chunk)} file{'s' if len(chunk) != 1 else ''} "
-        f"(Part {page + 1}/{pages})..."
+        f"(Part {page + 1}/{pages})...\n"
+        f"⏳ Files auto-delete after {hours_str}h — save them to your device!"
     )
     kwargs = {"chat_id": chat_id, "text": header, "parse_mode": ParseMode.MARKDOWN}
     if reply_to:
@@ -260,16 +269,38 @@ async def _send_page(
     await context.bot.send_message(**kwargs)
 
     # ── Send files ────────────────────────────────────────────
+    failed = []
     for i, f in enumerate(chunk):
         file_id   = f["file_id"]
         file_type = f.get("file_type", "document")
-        caption   = f.get("caption", f"🎬 *{title}*")
+        base_caption = f.get("caption", f"🎬 *{title}*")
+        # No real "file" to save for a plain link/button - skip the warning there.
+        caption = base_caption + (autodelete_notice() if file_type != "text" else "")
 
-        await _send_file(context.bot, chat_id, file_id, file_type, caption, extra=f)
-
+        try:
+            sent_msg = await _send_file(context, chat_id, file_id, file_type, caption, extra=f)
+            if sent_msg is not None:
+                schedule_autodelete(context, chat_id, sent_msg.message_id)
+        except Exception:
+            failed.append(f.get("name") or base_caption or f"file #{start + i + 1}")
+            logger.exception(
+                "Failed to send file for series '%s' (index %d in DB list)",
+                title, start + i,
+            )
 
         if i < len(chunk) - 1:
             await asyncio.sleep(0.4)
+
+    if failed:
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=(
+                "⚠️ Couldn't send " + str(len(failed)) + " file(s) in this batch "
+                "(likely an expired or broken file). Skipped so the rest could "
+                "still go through:\n" + "\n".join(f"• {name}" for name in failed)
+            ),
+        )
+
 
     # ── Continue button if more pages ─────────────────────────
     if end < total:
@@ -281,12 +312,26 @@ async def _send_page(
                 callback_data=callback_data,
             )]
         ])
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text=f"✅ Part {page + 1} sent! Tap to get the next batch.",
-            reply_markup=keyboard,
-            parse_mode=ParseMode.MARKDOWN,
-        )
+        try:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=f"✅ Part {page + 1} sent! Tap to get the next batch.",
+                reply_markup=keyboard,
+                parse_mode=ParseMode.MARKDOWN,
+            )
+        except Exception:
+            logger.exception(
+                "Failed to send Continue button for '%s' page %d (callback_data=%r)",
+                title, page + 1, callback_data,
+            )
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=(
+                    f"✅ Part {page + 1} sent, but I couldn't build the Continue "
+                    f"button ({remaining} file{'s' if remaining != 1 else ''} left). "
+                    f"Type the series name again to get more."
+                ),
+            )
     else:
         await context.bot.send_message(
             chat_id=chat_id,
@@ -295,20 +340,23 @@ async def _send_page(
         )
 
 
-async def _send_file(bot, chat_id: int, file_id: str, file_type: str, caption: str, extra: dict = None):
+async def _send_file(context, chat_id: int, file_id: str, file_type: str, caption: str, extra: dict = None):
+    """Sends the file/link and returns the resulting Message (or None)."""
+    bot = context.bot
     kwargs = dict(chat_id=chat_id, caption=caption, parse_mode=ParseMode.MARKDOWN)
     if file_type == "document":
-        await bot.send_document(document=file_id, **kwargs)
+        return await bot.send_document(document=file_id, **kwargs)
     elif file_type == "video":
-        await bot.send_video(video=file_id, **kwargs)
+        return await bot.send_video(video=file_id, **kwargs)
     elif file_type == "photo":
-        await bot.send_photo(photo=file_id, **kwargs)
+        return await bot.send_photo(photo=file_id, **kwargs)
     elif file_type == "text":
         url = (extra or {}).get("text", "")
         if url.startswith("http://") or url.startswith("https://"):
             keyboard = InlineKeyboardMarkup(
                 [[InlineKeyboardButton(caption.strip("🎬 *_") or "Open", url=url)]]
             )
-            await bot.send_message(chat_id=chat_id, text=caption, parse_mode=ParseMode.MARKDOWN, reply_markup=keyboard)
+            return await bot.send_message(chat_id=chat_id, text=caption, parse_mode=ParseMode.MARKDOWN, reply_markup=keyboard)
         else:
-            await bot.send_message(chat_id=chat_id, text=f"{caption}\n\n{url}", parse_mode=ParseMode.MARKDOWN)
+            return await bot.send_message(chat_id=chat_id, text=f"{caption}\n\n{url}", parse_mode=ParseMode.MARKDOWN)
+    return None
