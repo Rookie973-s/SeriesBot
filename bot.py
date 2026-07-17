@@ -1,9 +1,11 @@
 import logging
+from telegram import Update
 from telegram.ext import (
     Application,
     CommandHandler,
     MessageHandler,
     CallbackQueryHandler,
+    ContextTypes,
     filters,
 )
 from config import BOT_TOKEN, ADMIN_IDS, CHANNEL_ID
@@ -28,8 +30,27 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+# ─── Global error handler ──────────────────────────────────────────────────
+# Catches anything unhandled anywhere in the bot so it gets logged (and
+# optionally reported to admins) instead of failing silently.
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
+    logger.error("Unhandled exception while processing an update:", exc_info=context.error)
+
+    # Best-effort ping to admins so you find out without digging through logs.
+    # Wrapped in its own try/except so a failure here can't cause a loop.
+    error_text = f"⚠️ Bot error:\n`{context.error}`"
+    for admin_id in ADMIN_IDS:
+        try:
+            await context.bot.send_message(chat_id=admin_id, text=error_text[:4000])
+        except Exception:
+            continue
+
+
 def main():
     app = Application.builder().token(BOT_TOKEN).build()
+
+    # ── Global error handler ───────────────────────────────────
+    app.add_error_handler(error_handler)
 
     # ── Admin commands ─────────────────────────────────────────
     app.add_handler(CommandHandler("addseries", addseries_handler))
@@ -60,6 +81,12 @@ def main():
 
     # ── User text search (must be last — catches all text) ────
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_search_handler))
+
+    if app.job_queue is None:
+        logger.warning(
+            "JobQueue is not available - auto-delete of sent files will NOT run. "
+            "Install with: pip install \"python-telegram-bot[job-queue]\""
+        )
 
     logger.info("SeriesBot is running...")
     app.run_polling(drop_pending_updates=True)
