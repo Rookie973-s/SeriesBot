@@ -11,6 +11,8 @@ try:
     ADMIN_IDS = [int(x.strip()) for x in _raw_admins.split(",") if x.strip()]
 except ValueError:
     raise RuntimeError("ADMIN_IDS must be numbers separated by commas.")
+# Auto deleting
+AUTO_DELETE_SECONDS = int(os.getenv("AUTO_DELETE_SECONDS", 5 * 3600))  # default 5 hours
 # ── MongoDB ────────────────────────────────────────────────────────────────────
 MONGO_URI = os.getenv("MONGO_URI")
 if not MONGO_URI:
