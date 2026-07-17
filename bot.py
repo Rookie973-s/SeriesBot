@@ -1,5 +1,7 @@
 import logging
+import time
 from telegram import Update
+from telegram.error import Conflict
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -33,11 +35,29 @@ logger = logging.getLogger(__name__)
 # ─── Global error handler ──────────────────────────────────────────────────
 # Catches anything unhandled anywhere in the bot so it gets logged (and
 # optionally reported to admins) instead of failing silently.
+_last_notified: dict[str, float] = {}
+_NOTIFY_COOLDOWN_SECONDS = 600  # don't re-DM admins about the same error more than once per 10 min
+
+
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     logger.error("Unhandled exception while processing an update:", exc_info=context.error)
 
-    # Best-effort ping to admins so you find out without digging through logs.
-    # Wrapped in its own try/except so a failure here can't cause a loop.
+    # 409 Conflict happens when two pollers briefly overlap (e.g. during a
+    # redeploy) and self-resolves once the old process stops - PTB already
+    # retries automatically. If it keeps happening past a redeploy, it means
+    # a second instance is genuinely still running somewhere; don't spam
+    # admins for every retry attempt either way, log is enough for this one.
+    if isinstance(context.error, Conflict):
+        return
+
+    # Cooldown: same error type+message won't re-notify within the window,
+    # so a fast-repeating failure doesn't flood admin DMs.
+    key = f"{type(context.error).__name__}:{str(context.error)[:100]}"
+    now = time.monotonic()
+    if now - _last_notified.get(key, 0) < _NOTIFY_COOLDOWN_SECONDS:
+        return
+    _last_notified[key] = now
+
     error_text = f"⚠️ Bot error:\n`{context.error}`"
     for admin_id in ADMIN_IDS:
         try:
