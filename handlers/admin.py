@@ -194,7 +194,7 @@ async def _fulfill_request(message, context: ContextTypes.DEFAULT_TYPE, pending:
     target_message_id = pending["message_id"]
     query              = pending["query"]
 
-    caption_default = f"🎬 Here's your request: *{query}*"
+    caption_default = f"🎬 Result to your request: *{query}*"
 
     try:
         if message.document:
